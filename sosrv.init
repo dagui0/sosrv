@@ -1,0 +1,63 @@
+#!/sbin/openrc-run
+# /etc/init.d/sosrv
+
+name="Socat Services"
+description="Multi-instance socat manager"
+sock_dir=/run/sosrv
+config=/etc/sosrv.conf
+
+depend() {
+    need localmount
+    after net
+}
+
+start() {
+    ebegin "Starting socat services"
+    mkdir -p "$sock_dir"
+    chmod 775 "$sock_dir"
+
+    grep -vE '^\s*#|^\s*$' "$config" | \
+    while IFS=" " read -r name type listen service; do
+
+        pidfile="$sock_dir/$name.pid"
+        real_listen="$(echo "$listen" | sed -e "s/\$name/$name/g")"
+        real_service="$(echo "$service" | sed -e "s/\$name/$name/g")"
+
+        if [ "$type" = "unix" ]; then
+            socket="$(echo $real_listen | cut -d, -f1)"
+            socket_opts="$(echo $real_listen | cut -d, -f2-)"
+            case "$socket" in
+                /*) ;;
+                *) socket="$sock_dir/$socket" ;;
+            esac
+            rm -f "$socket"
+            server_socket="UNIX-LISTEN:$socket,$socket_opts,fork"
+        elif [ "$type" = "tcp" ]; then
+            server_socket="TCP-LISTEN:$real_listen,fork"
+        elif [ "$type" = "openssl" ]; then
+            server_socket="OPENSSL-LISTEN:$real_listen,fork"
+        else
+            ewarn "Unknown socket type for \"$name\": $type"
+            continue
+        fi
+
+        start-stop-daemon --start --background --make-pidfile \
+        --pidfile "$pidfile" \
+        --exec /usr/bin/socat -- "$server_socket" "$real_service"
+
+        einfo "Started $name"
+    done
+}
+
+stop() {
+    ebegin "Stopping socat services"
+    for pidfile in "$sock_dir"/*.pid; do
+        [ -e "$pidfile" ] || continue
+
+        name=$(basename "$pidfile" .pid)
+        start-stop-daemon --stop --pidfile "$pidfile"
+        rm -f "$pidfile"
+        einfo "Stopped $name"
+    done
+    eend $?
+}
